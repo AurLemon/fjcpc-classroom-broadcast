@@ -1,0 +1,10 @@
+{
+  "teacher_ip": "127.0.0.1",
+  "teacher_port": 5000,
+  "student_name": "Alice",
+  "student_id": "S01",
+  "auto_fullscreen": true,
+  "download_path": "downloads",
+  "auto_open_file": false,
+  "allow_forced_fullscreen": true
+}

@@ -1,0 +1,22 @@
+listen_host = "0.0.0.0"
+listen_port = 5000
+enable_audio_by_default = false
+force_audio = false
+save_upload_dir = "uploads"
+file_auto_open = false
+
+[broadcast]
+fps = 12
+jpeg_quality = 75
+
+[[expected_students]]
+student_id = "S01"
+student_name = "Alice"
+seat = "Row1-01"
+allow_uploads = true
+
+[[expected_students]]
+student_id = "S02"
+student_name = "Bob"
+seat = "Row1-02"
+allow_uploads = true
