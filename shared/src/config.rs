@@ -62,16 +62,33 @@ impl TeacherConfig {
         if let Some(parent) = path_ref.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create teacher config directory {}", parent.display())
+                    format!(
+                        "Failed to create teacher config directory {}",
+                        parent.display()
+                    )
                 })?;
             }
         }
+
+        if !path_ref.exists() {
+            let mut config = Self::default();
+            let serialized = toml::to_string_pretty(&config)
+                .context("Failed to serialize default teacher config")?;
+            fs::write(path_ref, serialized).with_context(|| {
+                format!(
+                    "Failed to write default teacher config to {}",
+                    path_ref.display()
+                )
+            })?;
+            config.finalize(path_ref)?;
+            return Ok(config);
+        }
+
         let content = fs::read_to_string(path_ref).with_context(|| {
             format!("Failed to read teacher config from {}", path_ref.display())
         })?;
-        let mut config: Self = toml::from_str(&content).with_context(|| {
-            format!("Failed to parse teacher config {}", path_ref.display())
-        })?;
+        let mut config: Self = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse teacher config {}", path_ref.display()))?;
         config.finalize(path_ref)?;
         Ok(config)
     }
@@ -164,16 +181,33 @@ impl StudentConfig {
         if let Some(parent) = path_ref.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create student config directory {}", parent.display())
+                    format!(
+                        "Failed to create student config directory {}",
+                        parent.display()
+                    )
                 })?;
             }
         }
+
+        if !path_ref.exists() {
+            let mut config = Self::default();
+            let serialized = serde_json::to_string_pretty(&config)
+                .context("Failed to serialize default student config")?;
+            fs::write(path_ref, serialized).with_context(|| {
+                format!(
+                    "Failed to write default student config to {}",
+                    path_ref.display()
+                )
+            })?;
+            config.finalize(path_ref)?;
+            return Ok(config);
+        }
+
         let content = fs::read_to_string(path_ref).with_context(|| {
             format!("Failed to read student config from {}", path_ref.display())
         })?;
-        let mut config: Self = serde_json::from_str(&content).with_context(|| {
-            format!("Failed to parse student config {}", path_ref.display())
-        })?;
+        let mut config: Self = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse student config {}", path_ref.display()))?;
         config.finalize(path_ref)?;
         Ok(config)
     }
