@@ -67,10 +67,9 @@ async fn capture_loop(state: Arc<TeacherState>, mode: BroadcastMode) -> Result<(
         let screen_clone = screen.clone();
         let cfg = base_cfg.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            capture_frame(screen_clone, frame_id, mode, &cfg)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || capture_frame(screen_clone, frame_id, mode, &cfg))
+                .await;
 
         match result {
             Ok(Ok(frame)) => {

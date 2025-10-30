@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-bincode = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 cpal = { workspace = true }

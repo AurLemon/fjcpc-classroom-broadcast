@@ -31,9 +31,9 @@ impl FileDownloadManager {
         let target = self.root.join(&sanitized);
 
         if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!("无法创建目录 {}", parent.display())
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("无法创建目录 {}", parent.display()))?;
         }
 
         let file = File::create(&target)
@@ -70,7 +70,10 @@ impl FileDownloadManager {
         Ok(())
     }
 
-    pub async fn handle_complete(&self, complete: &FileTransferComplete) -> Result<Option<PathBuf>> {
+    pub async fn handle_complete(
+        &self,
+        complete: &FileTransferComplete,
+    ) -> Result<Option<PathBuf>> {
         let mut sessions = self.sessions.lock();
         if let Some(mut session) = sessions.remove(&complete.transfer_id) {
             session.file.flush().await?;

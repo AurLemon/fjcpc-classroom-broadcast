@@ -37,7 +37,9 @@ impl AudioPlayer {
         let channels = config.channels() as usize;
         let stream_config: StreamConfig = config.into();
 
-        let queue = Arc::new(Mutex::new(VecDeque::<i16>::with_capacity(sample_rate as usize)));
+        let queue = Arc::new(Mutex::new(VecDeque::<i16>::with_capacity(
+            sample_rate as usize,
+        )));
         let muted = Arc::new(AtomicBool::new(false));
 
         let queue_cb = queue.clone();

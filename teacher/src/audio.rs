@@ -56,7 +56,8 @@ impl AudioBroadcaster {
 
         let running_capture = self.running.clone();
         let capture_sender = tx.clone();
-        let capture_handle = tokio::task::spawn_blocking(move || run_capture(capture_sender, running_capture));
+        let capture_handle =
+            tokio::task::spawn_blocking(move || run_capture(capture_sender, running_capture));
 
         let state = self.state.clone();
         let running_dispatch = self.running.clone();
@@ -106,6 +107,16 @@ impl AudioBroadcaster {
 
     pub fn set_force_play(&self, force: bool) {
         self.force_play.store(force, Ordering::SeqCst);
+    }
+
+    #[cfg(feature = "ui")]
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    #[cfg(feature = "ui")]
+    pub fn is_force_play(&self) -> bool {
+        self.force_play.load(Ordering::SeqCst)
     }
 }
 

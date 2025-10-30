@@ -9,7 +9,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -18,6 +18,60 @@ use shared::prelude::*;
 
 use crate::audio::AudioBroadcaster;
 use crate::screen::ScreenBroadcaster;
+
+#[cfg(feature = "ui")]
+pub type CommandSender = mpsc::UnboundedSender<ServerCommand>;
+pub type CommandReceiver = mpsc::UnboundedReceiver<ServerCommand>;
+
+#[derive(Debug)]
+pub enum ServerCommand {
+    StartTeacher {
+        mode: BroadcastMode,
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    StartStudent {
+        student_id: String,
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    StopBroadcast {
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    SendFile {
+        path: PathBuf,
+        auto_open_override: bool,
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    AudioStart {
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    AudioStop {
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    AudioForce {
+        force: bool,
+        respond_to: Option<oneshot::Sender<Result<(), String>>>,
+    },
+    #[cfg(feature = "ui")]
+    ListStudents {
+        respond_to: oneshot::Sender<Result<Vec<StudentSummary>, String>>,
+    },
+    #[cfg(feature = "ui")]
+    QueryStatus {
+        respond_to: oneshot::Sender<ServerStatus>,
+    },
+    Quit,
+}
+
+#[cfg(feature = "ui")]
+#[derive(Debug, Clone)]
+pub struct ServerStatus {
+    pub listen_addr: String,
+    pub broadcast_mode: BroadcastMode,
+    pub broadcast_source: Option<BroadcastSource>,
+    pub audio_enabled: bool,
+    pub audio_forced: bool,
+    pub connected_students: usize,
+}
 
 pub struct TeacherServer {
     state: Arc<TeacherState>,
@@ -40,7 +94,11 @@ impl TeacherServer {
         })
     }
 
-    pub async fn run(&self, auto_start_broadcast: bool) -> Result<()> {
+    pub async fn run(
+        &self,
+        auto_start_broadcast: bool,
+        command_rx: Option<CommandReceiver>,
+    ) -> Result<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             bail!("Teacher server already running");
         }
@@ -52,7 +110,8 @@ impl TeacherServer {
             .with_context(|| format!("无法监听 {addr}"))?;
 
         if auto_start_broadcast {
-            self.start_teacher_broadcast(BroadcastMode::Fullscreen).await?;
+            self.start_teacher_broadcast(BroadcastMode::Fullscreen)
+                .await?;
         }
 
         if self.state.config.enable_audio_by_default {
@@ -70,7 +129,9 @@ impl TeacherServer {
                         let state = state.clone();
                         let screen = screen.clone();
                         tokio::spawn(async move {
-                            if let Err(err) = handle_student_connection(state, screen, stream, addr).await {
+                            if let Err(err) =
+                                handle_student_connection(state, screen, stream, addr).await
+                            {
                                 error!(?err, %addr, "学生连接异常");
                             }
                         });
@@ -83,9 +144,12 @@ impl TeacherServer {
             }
         });
 
-        info!("输入 help 查看命令");
+        let console_enabled = command_rx.is_none();
+        if console_enabled {
+            info!("输入 help 查看命令");
+        }
         tokio::select! {
-            result = self.command_loop() => {
+            result = self.command_loop(command_rx, console_enabled) => {
                 if let Err(err) = result {
                     error!(?err, "命令循环异常");
                 }
@@ -103,83 +167,322 @@ impl TeacherServer {
         Ok(())
     }
 
-    async fn command_loop(&self) -> Result<()> {
-        let stdin = tokio::io::stdin();
-        let reader = BufReader::new(stdin);
-        let mut lines = reader.lines();
+    async fn command_loop(
+        &self,
+        mut external: Option<CommandReceiver>,
+        enable_console: bool,
+    ) -> Result<()> {
+        let mut lines = if enable_console {
+            Some(BufReader::new(tokio::io::stdin()).lines())
+        } else {
+            None
+        };
 
-        while let Some(line) = lines.next_line().await? {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let mut parts = trimmed.split_whitespace();
-            match parts.next().unwrap_or("") {
-                "help" => self.print_help(),
-                "students" => self.print_students(),
-                "start" => {
-                    let mode = match parts.next() {
-                        Some("window") => BroadcastMode::Window,
-                        _ => BroadcastMode::Fullscreen,
-                    };
-                    if let Err(err) = self.start_teacher_broadcast(mode).await {
-                        error!(?err, "开启广播失败");
-                    }
-                }
-                "stop" => {
-                    if let Err(err) = self.stop_broadcast().await {
-                        error!(?err, "停止广播失败");
-                    }
-                }
-                "spotlight" => {
-                    if let Some(student_id) = parts.next() {
-                        if let Err(err) = self.start_student_broadcast(student_id).await {
-                            error!(?err, "学生屏幕广播失败");
-                        }
+        loop {
+            tokio::select! {
+                maybe_cmd = async {
+                    if let Some(rx) = external.as_mut() {
+                        rx.recv().await
                     } else {
-                        warn!("用法: spotlight <student_id>");
+                        None
                     }
-                }
-                "send" => {
-                    if let Some(path) = parts.next() {
-                        let auto_open = matches!(parts.next(), Some("open"));
-                        if let Err(err) = self.send_file_to_all(PathBuf::from(path), auto_open).await {
-                            error!(?err, "文件分发失败");
-                        }
-                    } else {
-                        warn!("用法: send <路径> [open]");
-                    }
-                }
-                "audio" => {
-                    match parts.next() {
-                        Some("on") => {
-                            if let Err(err) = self.audio.start().await {
-                                error!(?err, "音频广播启动失败");
+                }, if external.is_some() => {
+                    match maybe_cmd {
+                        Some(cmd) => {
+                            if self.execute_command(cmd).await? {
+                                break;
                             }
                         }
-                        Some("off") => {
-                            self.audio.stop().await;
-                        }
-                        Some("force") => {
-                            self.audio.set_force_play(true);
-                            info!("音频强制播放已开启");
-                        }
-                        Some("allow") => {
-                            self.audio.set_force_play(false);
-                            info!("学生可自行静音");
-                        }
-                        _ => warn!("用法: audio <on|off|force|allow>"),
+                        None => break,
                     }
                 }
-                "quit" | "exit" => {
-                    info!("准备退出");
-                    break;
+                line = async {
+                    if let Some(lines) = lines.as_mut() {
+                        lines.next_line().await
+                    } else {
+                        Ok(None)
+                    }
+                }, if lines.is_some() => {
+                    match line {
+                        Ok(Some(content)) => {
+                            if self.handle_console_command(content).await? {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            error!(?err, "读取命令失败");
+                        }
+                    }
                 }
-                other => warn!(%other, "未知命令"),
+                else => break,
             }
         }
 
         Ok(())
+    }
+
+    async fn handle_console_command(&self, line: String) -> Result<bool> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        match parts.next().unwrap_or("") {
+            "help" => {
+                self.print_help();
+                Ok(false)
+            }
+            "students" => {
+                self.print_students();
+                Ok(false)
+            }
+            "start" => {
+                let mode = match parts.next() {
+                    Some("window") => BroadcastMode::Window,
+                    _ => BroadcastMode::Fullscreen,
+                };
+                self.invoke_console_command(
+                    ServerCommand::StartTeacher {
+                        mode,
+                        respond_to: None,
+                    },
+                    "开启广播失败",
+                )
+                .await
+            }
+            "stop" => {
+                self.invoke_console_command(
+                    ServerCommand::StopBroadcast { respond_to: None },
+                    "停止广播失败",
+                )
+                .await
+            }
+            "spotlight" => {
+                if let Some(student_id) = parts.next() {
+                    self.invoke_console_command(
+                        ServerCommand::StartStudent {
+                            student_id: student_id.to_string(),
+                            respond_to: None,
+                        },
+                        "学生屏幕广播失败",
+                    )
+                    .await
+                } else {
+                    warn!("用法: spotlight <student_id>");
+                    Ok(false)
+                }
+            }
+            "send" => {
+                if let Some(path) = parts.next() {
+                    let auto_open = matches!(parts.next(), Some("open"));
+                    self.invoke_console_command(
+                        ServerCommand::SendFile {
+                            path: PathBuf::from(path),
+                            auto_open_override: auto_open,
+                            respond_to: None,
+                        },
+                        "文件分发失败",
+                    )
+                    .await
+                } else {
+                    warn!("用法: send <路径> [open]");
+                    Ok(false)
+                }
+            }
+            "audio" => match parts.next() {
+                Some("on") => {
+                    self.invoke_console_command(
+                        ServerCommand::AudioStart { respond_to: None },
+                        "音频广播启动失败",
+                    )
+                    .await
+                }
+                Some("off") => {
+                    self.invoke_console_command(
+                        ServerCommand::AudioStop { respond_to: None },
+                        "停止音频广播失败",
+                    )
+                    .await
+                }
+                Some("force") => {
+                    self.invoke_console_command(
+                        ServerCommand::AudioForce {
+                            force: true,
+                            respond_to: None,
+                        },
+                        "设置音频强制播放失败",
+                    )
+                    .await
+                }
+                Some("allow") => {
+                    self.invoke_console_command(
+                        ServerCommand::AudioForce {
+                            force: false,
+                            respond_to: None,
+                        },
+                        "取消音频强制播放失败",
+                    )
+                    .await
+                }
+                _ => {
+                    warn!("用法: audio <on|off|force|allow>");
+                    Ok(false)
+                }
+            },
+            "quit" | "exit" => self.execute_command(ServerCommand::Quit).await,
+            other => {
+                warn!(%other, "未知命令");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn invoke_console_command(
+        &self,
+        command: ServerCommand,
+        error_message: &str,
+    ) -> Result<bool> {
+        match self.execute_command(command).await {
+            Ok(should_exit) => Ok(should_exit),
+            Err(err) => {
+                error!(?err, "{error_message}");
+                Ok(false)
+            }
+        }
+    }
+
+    async fn execute_command(&self, command: ServerCommand) -> Result<bool> {
+        match command {
+            ServerCommand::StartTeacher { mode, respond_to } => {
+                let result = self.start_teacher_broadcast(mode).await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|err| format!("{:#}", err)),
+                    );
+                    if result.is_err() {
+                        return Ok(false);
+                    }
+                }
+                result?;
+                Ok(false)
+            }
+            ServerCommand::StartStudent {
+                student_id,
+                respond_to,
+            } => {
+                let result = self.start_student_broadcast(&student_id).await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|err| format!("{:#}", err)),
+                    );
+                    if result.is_err() {
+                        return Ok(false);
+                    }
+                }
+                result?;
+                Ok(false)
+            }
+            ServerCommand::StopBroadcast { respond_to } => {
+                let result = self.stop_broadcast().await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|err| format!("{:#}", err)),
+                    );
+                    if result.is_err() {
+                        return Ok(false);
+                    }
+                }
+                result?;
+                Ok(false)
+            }
+            ServerCommand::SendFile {
+                path,
+                auto_open_override,
+                respond_to,
+            } => {
+                let result = self.send_file_to_all(path, auto_open_override).await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|err| format!("{:#}", err)),
+                    );
+                    if result.is_err() {
+                        return Ok(false);
+                    }
+                }
+                result?;
+                Ok(false)
+            }
+            ServerCommand::AudioStart { respond_to } => {
+                let result = self.audio.start().await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(
+                        result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|err| format!("{:#}", err)),
+                    );
+                    if result.is_err() {
+                        return Ok(false);
+                    }
+                }
+                result?;
+                Ok(false)
+            }
+            ServerCommand::AudioStop { respond_to } => {
+                self.audio.stop().await;
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(false)
+            }
+            ServerCommand::AudioForce { force, respond_to } => {
+                self.audio.set_force_play(force);
+                if let Some(tx) = respond_to {
+                    let _ = tx.send(Ok(()));
+                }
+                Ok(false)
+            }
+            #[cfg(feature = "ui")]
+            ServerCommand::ListStudents { respond_to } => {
+                let list = self.state.list_students();
+                let _ = respond_to.send(Ok(list));
+                Ok(false)
+            }
+            #[cfg(feature = "ui")]
+            ServerCommand::QueryStatus { respond_to } => {
+                let status = self.status_snapshot();
+                let _ = respond_to.send(status);
+                Ok(false)
+            }
+            ServerCommand::Quit => Ok(true),
+        }
+    }
+
+    #[cfg(feature = "ui")]
+    fn status_snapshot(&self) -> ServerStatus {
+        let students = self.state.list_students();
+        ServerStatus {
+            listen_addr: self.state.config().listen_addr(),
+            broadcast_mode: self.state.broadcast_mode(),
+            broadcast_source: self.state.broadcast_source(),
+            audio_enabled: self.audio.is_running(),
+            audio_forced: self.audio.is_force_play(),
+            connected_students: students.len(),
+        }
     }
 
     fn print_help(&self) {
@@ -196,7 +499,10 @@ impl TeacherServer {
         }
         println!("在线学生:");
         for entry in entries {
-            println!("- {} ({}) @ {}", entry.display_name, entry.student_id, entry.addr);
+            println!(
+                "- {} ({}) @ {}",
+                entry.display_name, entry.student_id, entry.addr
+            );
         }
     }
 
@@ -282,11 +588,12 @@ impl TeacherServer {
             offset += read as u64;
         }
 
-        self.state.broadcast(TeacherToStudent::FileComplete(FileTransferComplete {
-            transfer_id,
-            success: true,
-            message: Some(format!("文件 {} 已发送", file_name)),
-        }));
+        self.state
+            .broadcast(TeacherToStudent::FileComplete(FileTransferComplete {
+                transfer_id,
+                success: true,
+                message: Some(format!("文件 {} 已发送", file_name)),
+            }));
 
         info!(file = %file_name, size = metadata.len(), "文件分发完成");
         Ok(())
@@ -324,8 +631,8 @@ async fn handle_student_connection(
 
     let welcome = TeacherToStudent::Welcome(HelloAck {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
-        force_fullscreen: matches!(state.current_mode(), BroadcastMode::Fullscreen),
-        broadcast_mode: state.current_mode(),
+        force_fullscreen: matches!(state.broadcast_mode(), BroadcastMode::Fullscreen),
+        broadcast_mode: state.broadcast_mode(),
     });
     student_handle.send(welcome);
 
@@ -365,10 +672,7 @@ async fn handle_student_connection(
                 }
             }
             StudentToTeacher::Audio(frame) => {
-                state.broadcast_except(
-                    TeacherToStudent::Audio(frame.clone()),
-                    Some(connection_id),
-                );
+                state.broadcast_except(TeacherToStudent::Audio(frame.clone()), Some(connection_id));
             }
             StudentToTeacher::FileOffer(offer) => {
                 let path = state.prepare_upload_path(&hello, &offer.file_name).await?;
@@ -454,6 +758,11 @@ impl TeacherState {
         }
     }
 
+    #[cfg(feature = "ui")]
+    pub fn config(&self) -> Arc<TeacherConfig> {
+        Arc::clone(&self.config)
+    }
+
     pub(crate) fn broadcast_config(&self) -> BroadcastConfig {
         self.config.broadcast.clone()
     }
@@ -517,7 +826,12 @@ impl TeacherState {
         *self.broadcast_mode.write() = mode;
     }
 
-    fn current_mode(&self) -> BroadcastMode {
+    #[cfg(feature = "ui")]
+    pub fn broadcast_source(&self) -> Option<BroadcastSource> {
+        self.broadcast_source.read().clone()
+    }
+
+    pub fn broadcast_mode(&self) -> BroadcastMode {
         *self.broadcast_mode.read()
     }
 
@@ -565,7 +879,7 @@ struct StudentHandle {
     student_name: String,
     #[allow(dead_code)]
     capabilities: StudentCapabilities,
-    sender: UnboundedSender<TeacherToStudent>,
+    sender: mpsc::UnboundedSender<TeacherToStudent>,
     last_seen: Mutex<Instant>,
 }
 
@@ -576,7 +890,7 @@ impl StudentHandle {
         student_id: String,
         student_name: String,
         capabilities: StudentCapabilities,
-        sender: UnboundedSender<TeacherToStudent>,
+        sender: mpsc::UnboundedSender<TeacherToStudent>,
     ) -> Self {
         Self {
             connection_id,
@@ -600,8 +914,9 @@ impl StudentHandle {
     }
 }
 
-struct StudentSummary {
-    student_id: String,
-    display_name: String,
-    addr: SocketAddr,
+#[derive(Debug, Clone)]
+pub struct StudentSummary {
+    pub student_id: String,
+    pub display_name: String,
+    pub addr: SocketAddr,
 }

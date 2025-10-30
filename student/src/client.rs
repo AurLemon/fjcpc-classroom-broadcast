@@ -66,11 +66,7 @@ impl StudentApp {
 
         spawn_heartbeat(tx.clone(), running.clone());
         let muted_handle = audio.muted_handle();
-        spawn_command_loop(
-            tx.clone(),
-            muted_handle,
-            running.clone(),
-        );
+        spawn_command_loop(tx.clone(), muted_handle, running.clone());
 
         tokio::select! {
             _ = signal::ctrl_c() => {
@@ -298,8 +294,7 @@ async fn handle_message(
                 }
             }
             let _ = tx.send(StudentToTeacher::Ack(
-                done
-                    .message
+                done.message
                     .clone()
                     .unwrap_or_else(|| "文件传输完成".into()),
             ));
@@ -329,7 +324,8 @@ async fn handle_broadcast_command(
         BroadcastCommand::Start { source, mode } => {
             let should_fullscreen = matches!(mode, BroadcastMode::Fullscreen)
                 && (config.auto_fullscreen
-                    || (forced_fullscreen.load(Ordering::SeqCst) && config.allow_forced_fullscreen));
+                    || (forced_fullscreen.load(Ordering::SeqCst)
+                        && config.allow_forced_fullscreen));
             let actual_mode = if should_fullscreen {
                 BroadcastMode::Fullscreen
             } else {
@@ -344,7 +340,11 @@ async fn handle_broadcast_command(
                 BroadcastSource::Student { student_id, .. } => {
                     if student_id == config.student_id {
                         screen_streamer
-                            .start(tx.clone(), config.student_id.clone(), config.student_name.clone())
+                            .start(
+                                tx.clone(),
+                                config.student_id.clone(),
+                                config.student_name.clone(),
+                            )
                             .await?;
                     } else {
                         screen_streamer.stop().await;
@@ -360,7 +360,11 @@ async fn handle_broadcast_command(
         BroadcastCommand::RequestStudentShare { student_id } => {
             if student_id == config.student_id {
                 screen_streamer
-                    .start(tx.clone(), config.student_id.clone(), config.student_name.clone())
+                    .start(
+                        tx.clone(),
+                        config.student_id.clone(),
+                        config.student_name.clone(),
+                    )
                     .await?;
             }
         }

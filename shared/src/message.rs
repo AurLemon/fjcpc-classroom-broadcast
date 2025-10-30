@@ -20,7 +20,10 @@ impl Default for BroadcastMode {
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum BroadcastSource {
     Teacher,
-    Student { student_id: String, student_name: Option<String> },
+    Student {
+        student_id: String,
+        student_name: Option<String>,
+    },
 }
 
 /// Supported codecs for video transport.

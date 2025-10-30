@@ -13,7 +13,7 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize + ?Sized,
 {
-    let payload = bincode::serialize(message)?;
+    let payload = serde_json::to_vec(message)?;
     if payload.len() > MAX_MESSAGE_SIZE {
         bail!("message too large: {} bytes", payload.len());
     }
@@ -32,12 +32,16 @@ where
 {
     let len = reader.read_u32_le().await? as usize;
     if len > MAX_MESSAGE_SIZE {
-        bail!("message length {} exceeds maximum {}", len, MAX_MESSAGE_SIZE);
+        bail!(
+            "message length {} exceeds maximum {}",
+            len,
+            MAX_MESSAGE_SIZE
+        );
     }
 
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
-    let msg = bincode::deserialize::<T>(&buf)?;
+    let msg = serde_json::from_slice::<T>(&buf)?;
     Ok(msg)
 }
 

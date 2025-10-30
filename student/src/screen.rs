@@ -41,7 +41,9 @@ impl ScreenStreamer {
         let running = self.running.clone();
         let frame_counter = self.frame_counter.clone();
         let task_handle = tokio::spawn(async move {
-            if let Err(err) = capture_loop(sender, running, frame_counter, student_id, student_name).await {
+            if let Err(err) =
+                capture_loop(sender, running, frame_counter, student_id, student_name).await
+            {
                 error!(?err, "学生屏幕捕获失败");
             }
         });
@@ -80,16 +82,19 @@ async fn capture_loop(
         let cfg = base_cfg.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            capture_frame(screen_clone, frame_id, &student_id_clone, &student_name_clone, &cfg)
+            capture_frame(
+                screen_clone,
+                frame_id,
+                &student_id_clone,
+                &student_name_clone,
+                &cfg,
+            )
         })
         .await;
 
         match result {
             Ok(Ok(frame)) => {
-                if sender
-                    .send(StudentToTeacher::Video(frame))
-                    .is_err()
-                {
+                if sender.send(StudentToTeacher::Video(frame)).is_err() {
                     warn!("发送屏幕帧失败，教师端可能已断开");
                     break;
                 }
@@ -133,7 +138,8 @@ fn capture_frame(
 
     let mut jpeg = Vec::new();
     {
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, cfg.jpeg_quality);
+        let mut encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, cfg.jpeg_quality);
         encoder.encode(&rgb, width as u32, height as u32, image::ColorType::Rgb8)?;
     }
 

@@ -42,7 +42,10 @@ impl Drop for VideoRenderer {
 }
 
 enum VideoCommand {
-    Frame { frame: VideoFrame, mode: BroadcastMode },
+    Frame {
+        frame: VideoFrame,
+        mode: BroadcastMode,
+    },
     Stop,
     Exit,
 }
@@ -53,34 +56,32 @@ fn render_loop(receiver: mpsc::Receiver<VideoCommand>) {
 
     for command in receiver {
         match command {
-            VideoCommand::Frame { frame, mode } => {
-                match decode_frame(&frame) {
-                    Ok((buffer, width, height)) => {
-                        ensure_window(&mut window, width, height, mode);
+            VideoCommand::Frame { frame, mode } => match decode_frame(&frame) {
+                Ok((buffer, width, height)) => {
+                    ensure_window(&mut window, width, height, mode);
+                    if let Some(win) = window.as_mut() {
+                        if !win.is_open() {
+                            debug!("视频窗口已关闭，重新创建");
+                            window = create_window(width, height, mode).ok();
+                        }
+
                         if let Some(win) = window.as_mut() {
-                            if !win.is_open() {
-                                debug!("视频窗口已关闭，重新创建");
-                                window = create_window(width, height, mode).ok();
+                            if current_mode != mode {
+                                apply_mode(win, mode);
+                                current_mode = mode;
                             }
 
-                            if let Some(win) = window.as_mut() {
-                                if current_mode != mode {
-                                    apply_mode(win, mode);
-                                    current_mode = mode;
-                                }
-
-                                if let Err(err) = win.update_with_buffer(&buffer, width, height) {
-                                    error!(?err, "刷新视频窗口失败");
-                                    window = None;
-                                }
+                            if let Err(err) = win.update_with_buffer(&buffer, width, height) {
+                                error!(?err, "刷新视频窗口失败");
+                                window = None;
                             }
                         }
                     }
-                    Err(err) => {
-                        error!(?err, "解码视频帧失败");
-                    }
                 }
-            }
+                Err(err) => {
+                    error!(?err, "解码视频帧失败");
+                }
+            },
             VideoCommand::Stop => {
                 if let Some(win) = window.take() {
                     drop(win);
