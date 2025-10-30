@@ -59,6 +59,13 @@ impl TeacherConfig {
     /// Load configuration from a TOML file.
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
+        if let Some(parent) = path_ref.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create teacher config directory {}", parent.display())
+                })?;
+            }
+        }
         let content = fs::read_to_string(path_ref).with_context(|| {
             format!("Failed to read teacher config from {}", path_ref.display())
         })?;
@@ -154,6 +161,13 @@ impl StudentConfig {
     /// Load configuration from a JSON file.
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
+        if let Some(parent) = path_ref.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create student config directory {}", parent.display())
+                })?;
+            }
+        }
         let content = fs::read_to_string(path_ref).with_context(|| {
             format!("Failed to read student config from {}", path_ref.display())
         })?;
