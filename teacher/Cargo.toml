@@ -3,6 +3,7 @@ name = "teacher"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [features]
 default = []
@@ -29,3 +30,6 @@ uuid = { workspace = true }
 cpal = { workspace = true }
 native-windows-gui = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
+
+[build-dependencies]
+embed-resource = "2.4"

@@ -6,6 +6,7 @@
 /dist/
 /build/
 /out/
+/vendor/
 
 # Runtime data generated during classroom sessions
 /logs/

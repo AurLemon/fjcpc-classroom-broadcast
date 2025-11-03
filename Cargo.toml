@@ -29,3 +29,6 @@ minifb = "0.24"
 cpal = "0.15"
 native-windows-gui = "1.0"
 rfd = "0.14"
+
+[patch.crates-io]
+native-windows-gui = { path = "vendor/native-windows-gui" }
